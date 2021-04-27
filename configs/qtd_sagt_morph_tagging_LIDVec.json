@@ -28,7 +28,7 @@
                         "vocab": {
                             "type": "BasicVocab",
                             "args": {
-                                "vocab_filename": "/data/corpora/qtd_sagt_2.7.1/feats.vocab"
+                                "vocab_filename": "/data/corpora/qtd_sagt_2.7.1/vocab/feats.vocab"
                             }
                         }
                     }
