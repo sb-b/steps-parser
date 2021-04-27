@@ -132,11 +132,12 @@ class ConfigParser:
         if self.saving:
             embeddings_processor.save_transformer_config(self.save_dir)
 
-        embeddings_dim = embeddings_processor.embedding_dim
+        embeddings_dim = embeddings_processor.embedding_dim + 100 #change: embeddings_dim is increased by 100 for the LID vectors
 
         model_outputs = self._init_outputs(model_args["outputs"], embeddings_dim)
-
-        post_processors = self._init_post_processors(model_args["post_processors"], model_outputs)
+  
+        #change: post_processors for dependency parsing is disabled for making the tool special for sequence labelling tasks.
+        post_processors = [] # self._init_post_processors(model_args["post_processors"], model_outputs)
 
         # Build and return the actual model
         return MultiParser(embeddings_processor, model_outputs, post_processors=post_processors)
