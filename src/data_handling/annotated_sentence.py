@@ -26,7 +26,7 @@ class AnnotatedSentence:
        it treats them completely identically to normal tokens and consequently forgets about their special ID.
     """
 
-    def __init__(self, tokens, annotation_data, multiword_tokens=None):
+    def __init__(self, tokens, lids, annotation_data, lid_data, multiword_tokens=None): #change: added LIDs and lid_data
         """
         Args:
             tokens: List of strings containing the tokens of the sentence.
@@ -37,9 +37,12 @@ class AnnotatedSentence:
                 positions when outputting the sentence in CoNLL format, but do not affect anything else.
         """
         self.tokens = tokens
+        self.lids = lids #change: AnnotatedSentence has also the LIDs to be used by the LID Vectors model.
         assert self.tokens[0] == "[root]"
 
         self.annotation_data = annotation_data
+        self.lid_data = lid_data #change: added lid_data 
+        
         for annotation_id in self.annotation_data:
             curr_annotation_data = self.annotation_data[annotation_id]
             if isinstance(curr_annotation_data, TagSequence):
@@ -82,6 +85,7 @@ class AnnotatedSentence:
         """
         # Create token list and ID->Index dictionary
         tokens = ['[root]']
+        lids = ['UNK'] #change: create LID list
         id_to_ix = dict({'0': 0})
         ix = 1
         multiword_tokens = dict()
@@ -98,6 +102,14 @@ class AnnotatedSentence:
 
             token_id = elements[0]
             token_form = elements[1]
+            
+            #change: from line 107 to 112: extracting LIDs from the conllu files. This is for the SAGT Treebank. Need to change it for other treebanks.
+            lid = "_"
+            lid_dummy = elements[9].split("|")
+            for dum in lid_dummy:
+                if "LangID=" in dum: #mycode make it LangID= again
+                    lid = dum.split("=")[1]
+
 
             if "-" in token_id:
                 multiword_tokens[ix] = (token_id, token_form)
@@ -107,6 +119,7 @@ class AnnotatedSentence:
 
             filtered_conll_lines.append(line)
             tokens.append(token_form)
+            lids.append(lid) #change: adding LID to lids
             id_to_ix[token_id] = ix
             ix += 1
 
@@ -128,10 +141,10 @@ class AnnotatedSentence:
             else:
                 assert False
 
-        return AnnotatedSentence(tokens, annotation_data, multiword_tokens)
+        return AnnotatedSentence(tokens, lids, annotation_data, multiword_tokens) #change: sending lids as a feature of AnnotatedSentence
 
     @staticmethod
-    def from_tensors(tokens, label_tensors, label_vocabs, annotation_types, multiword_tokens=None):
+    def from_tensors(tokens, lids, label_tensors, label_vocabs, annotation_types, multiword_tokens=None): #change: added lids
         """Create an AnnotatedSentence from tensors containing label indices for the different annotation layers.
 
         Args:
@@ -150,14 +163,19 @@ class AnnotatedSentence:
         assert annotation_types.keys() == label_tensors.keys() == label_vocabs.keys()
 
         annotation_data = dict()
+        lid_data = dict() #change: initialising lid_data
         for annotation_id in label_tensors:
             assert annotation_types[annotation_id] in {DependencyMatrix, TagSequence}
             # Call the static "from_tensor" method for the correct annotation class
             annotation_data[annotation_id] = annotation_types[annotation_id].from_tensor(tokens,
                                                                                          label_tensors[annotation_id],
                                                                                          label_vocabs[annotation_id])
+            #change: defining lid_data
+            lid_data[annotation_id] = annotation_types[annotation_id].from_tensor(lids, 
+                                                                                         label_tensors[annotation_id],
+                                                                                         label_vocabs[annotation_id]) 
 
-        return AnnotatedSentence(tokens, annotation_data, multiword_tokens=multiword_tokens)
+        return AnnotatedSentence(tokens, lids, annotation_data, lid_data, multiword_tokens=multiword_tokens) #change: sending lids and lid_data
 
     def tokens_no_root(self):
         """Return the "raw" tokens of this sentences, i.e. everything except the [root] token at the start."""
