@@ -110,7 +110,7 @@ class Wrapper(nn.Module):
 
         return scalar_mix
 
-    def forward(self, input_sentences):
+    def forward(self, input_sentences, input_lids): #change: added input LIDs
         """Transform a bunch of input sentences (list of lists of tokens) into a batch (tensor) of
         BERT/RoBERTa/etc. embeddings.
 
