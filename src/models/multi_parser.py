@@ -44,6 +44,8 @@ class MultiParser(nn.Module):
 
         # List of components which post-process module output (optional)
         self.post_processors = post_processors if post_processors is not None else list()
+        
+        self.lang_embeds = nn.Embedding(5, 100) #change: 5 LID vectors for the 5 LID categories in the SAGT Treebank. The number should be changed for other treebanks when the number of LID categories is different. 
 
     def parse(self, sentence):
         """Parse a singular sentence (in evaluation mode, i.e. no dropout) and perform post-processing.
@@ -59,6 +61,7 @@ class MultiParser(nn.Module):
         # Extract sentence tokens and make dummy batch
         if isinstance(sentence, AnnotatedSentence):
             tokens = sentence.tokens[1:]  # Omit [root] token
+            lids = sentence.lids[1:] #change: getting LIDs from the sentence.
             multiword_tokens = sentence.multiword_tokens
         elif isinstance(sentence, str):
             tokens = sentence.split(" ")
@@ -66,22 +69,24 @@ class MultiParser(nn.Module):
         else:
             raise Exception("Sentence must be either whitespace-tokenized string or DependencyAnnotatedSentence!")
         singleton_batch = [tokens]
+        lid_batch = [lids] #change: getting LID batch
 
         # Ensure eval mode and compute logits, labels
         self.eval()
-        logits, labels = self._compute_logits_and_labels(singleton_batch)
+        logits, labels = self._compute_logits_and_labels(singleton_batch, lid_batch) #change: sending LID batch to compute_logits_and_labels
 
         # Squeeze to get rid of dummy batch dimension
         logits = {outp_id: torch.squeeze(logits[outp_id], dim=0) for outp_id in logits}
         labels = {outp_id: torch.squeeze(labels[outp_id], dim=0) for outp_id in labels}
 
         # Create AnnotatedSentence from label tensors
-        parsed_sentence = AnnotatedSentence.from_tensors(["[root]"] + tokens, labels, self.label_vocabs,
-                                                         self.annotation_types, multiword_tokens=multiword_tokens)
+        parsed_sentence = AnnotatedSentence.from_tensors(["[root]"] + tokens, lids, labels, self.label_vocabs,
+                                                         self.annotation_types, multiword_tokens=multiword_tokens) #change: added lids to AnnotatedSentence
 
         # Post-process those annotation layers for which post-processing modules have been provided
-        for post_processor in self.post_processors:
-            post_processor.post_process(parsed_sentence, logits)
+        #change: removed the post_processor that is needed for dependency parsing
+        #for post_processor in self.post_processors:
+        #    post_processor.post_process(parsed_sentence, logits)
 
         return parsed_sentence
 
@@ -100,7 +105,8 @@ class MultiParser(nn.Module):
         """
         # Create token batch and compute logits
         sent_batch = [sent.tokens_no_root() for sent in gold_sentences]
-        logits, labels = self._compute_logits_and_labels(sent_batch)
+        lid_batch = [sent.lids[1:] for sent in gold_sentences] #change: getting the LID batch for each sentence batch
+        logits, labels = self._compute_logits_and_labels(sent_batch, lid_batch) #change: sending LID batch to compute_logits_and_labels
 
         # Iterate over the sentences in the batch and compute eval metrics for each
         batch_metrics = {outp_id: {"predicted": 0, "gold": 0, "correct": 0} for outp_id in self.outputs}
@@ -109,8 +115,8 @@ class MultiParser(nn.Module):
             curr_logits = {outp_id: logits[outp_id][i] for outp_id in logits}
             curr_labels = {outp_id: labels[outp_id][i] for outp_id in labels}
 
-            predicted_sentence = AnnotatedSentence.from_tensors(gold_sentence.tokens, curr_labels, self.label_vocabs,
-                                                                self.annotation_types)
+            predicted_sentence = AnnotatedSentence.from_tensors(gold_sentence.tokens, gold_sentence.lids, curr_labels, self.label_vocabs,
+                                                                self.annotation_types) #change: added lids to AnnotatedSentence
             if post_process:
                 for outp_id in self.post_processors:
                     self.post_processors.post_process(predicted_sentence[outp_id], curr_logits[outp_id])
@@ -123,19 +129,46 @@ class MultiParser(nn.Module):
 
         return logits, batch_metrics
 
-    def _compute_logits_and_labels(self, input_sents):
+    def _compute_logits_and_labels(self, input_sents, input_lids): #change: added input LIDs
         """For the given batch of sentences (provided as a list of lists of tokens), compute logits and labels
         for each output/annotation ID by first running the embeddings processor and then the individual output modules.
         The output modules also handle the conversion from logits to labels (argmax).
         """
         # Get token embeddings
-        embeddings, true_seq_lengths = self.embed(input_sents)
+        embeddings, true_seq_lengths = self.embed(input_sents, input_lids) #change: added input LIDs
+        
+        
+        #change: from line 141 to line 158: concatenation of LID vectors to the word embeddings.
+        word_to_ix = {"TR": 0, "DE": 1, "MIXED": 2, "LANG3": 3, "OTHER": 4} #This is for the SAGT Treebank. Need to change it for other treebanks.
+      
+        embeddings_new = dict()
+        for output_id in self.outputs:
+            embeddings_new[output_id] = torch.zeros(list(embeddings[output_id].size())[0],list(embeddings[output_id].size())[1],868).cuda()
+         
+        for i,sent in enumerate(input_sents):
+            for j,word in enumerate(sent):
+                for output_id in self.outputs:
+                    
+                    lookup_tensor = torch.tensor([word_to_ix[input_lids[i][j]]], dtype=torch.long)
+                    lid_embed = self.lang_embeds(lookup_tensor.cuda())
+                    if embeddings[output_id].size()[2] == 768:
+                       embeddings_new[output_id][i][j] = torch.cat((embeddings[output_id][i][j],  lid_embed[0].cuda()),dim=0)
+                    else:
+                       embeddings_new[output_id][i][j] = torch.cat((embeddings[output_id][i][j][:-100],  lid_embed[0].cuda()),dim=0)
+                    
+        bn = nn.BatchNorm1d(868).cuda() #change: batch normalization for the concatenated embeddings.
 
         # Run the output modules on the embeddings
         logits = dict()
         labels = dict()
         for output_id in self.outputs:
-            curr_logits, curr_labels = self.outputs[output_id](embeddings[output_id], true_seq_lengths)
+           
+            #change: batch normalization for the concatenated embeddings.
+            permuted = embeddings_new[output_id].permute(0, 2, 1)
+            output = bn(permuted)
+            embeddings_new[output_id] = output.permute(0,2,1)
+
+            curr_logits, curr_labels = self.outputs[output_id](embeddings_new[output_id], true_seq_lengths) #change: replaced embeddings with embeddings_new
             logits[output_id] = curr_logits
             labels[output_id] = curr_labels
 
